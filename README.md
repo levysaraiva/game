@@ -1,159 +1,245 @@
-# Informações do Aluno
+# Projeto: Sistema de Balanceamento de Carga com Backend, Frontend e NGINX
 
-- **Nome:** Levi da Silva Saraiva
-- **E-mail:** [levysaraiva@gmail.com](mailto:levysaraiva@gmail.com)
+## Estrutura do Repositório
 
+Este projeto foi desenvolvido para orquestrar um sistema de **backend** em Flask, um **frontend** em React e um **NGINX** configurado como proxy reverso e balanceador de carga. Todos os serviços são orquestrados utilizando **Docker Compose**.
 
-# Jogo de Adivinhação com Flask
+### Estrutura de Arquivos:
+- **Dockerfile (Backend)**: Configuração do container Python/Flask.
+- **Dockerfile (Frontend)**: Configuração do container React com build via NGINX.
+- **docker-compose.yml**: Orquestra todos os serviços (backend, frontend, banco de dados, e NGINX).
+- **nginx.conf**: Configuração do NGINX para proxy reverso e balanceamento de carga.
 
-Este é um simples jogo de adivinhação desenvolvido utilizando o framework Flask. O jogador deve adivinhar uma senha criada aleatoriamente, e o sistema fornecerá feedback sobre o número de letras corretas e suas respectivas posições.
+---
 
-## Funcionalidades
+## 1. Pré-requisitos
+Certifique-se de ter os seguintes requisitos instalados:
 
-- Criação de um novo jogo com uma senha fornecida pelo usuário.
-- Adivinhe a senha e receba feedback se as letras estão corretas e/ou em posições corretas.
-- As senhas são armazenadas  utilizando base64.
-- As adivinhações incorretas retornam uma mensagem com dicas.
-  
-## Requisitos
+- **Docker**: [Instalação do Docker](https://docs.docker.com/get-docker/)
+- **Docker Compose**: [Instalação do Docker Compose](https://docs.docker.com/compose/install/)
+- Git: [Instalação do Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git)
 
-- Python 3.8+
-- Flask
-- Um banco de dados local (ou um mecanismo de armazenamento configurado em `current_app.db`)
-- node 18.17.0
+---
 
-## Instalação
+## 2. Clonando o Projeto
+Clone o repositório em sua máquina:
+```bash
+git clone <URL_DO_REPOSITORIO>
+cd <NOME_DO_REPOSITORIO>
+```
 
-1. Clone o repositório:
+---
 
+## 3. Configuração do Backend (Flask)
+O **backend** utiliza Python 3.9 e Flask. O arquivo `Dockerfile` foi configurado para copiar e instalar as dependências.
+
+### Dockerfile - Backend:
+```dockerfile
+FROM python:3.9-slim
+
+WORKDIR /app
+
+# Copia e instala as dependências
+COPY requirements.txt .
+RUN pip install --no-cache-dir --trusted-host pypi.org --trusted-host pypi.python.org --trusted-host files.pythonhosted.org -r requirements.txt
+
+# Copia o restante do código
+COPY . .
+
+# Variáveis de ambiente
+ENV FLASK_APP=/app/run.py \
+    FLASK_RUN_HOST=0.0.0.0 \
+    FLASK_RUN_PORT=5000
+
+# Healthcheck
+HEALTHCHECK CMD curl --fail http://localhost:5000/health || exit 1
+
+# Expõe a porta do Flask
+EXPOSE 5000
+
+CMD ["flask", "run"]
+```
+
+---
+
+## 4. Configuração do Frontend (React)
+O **frontend** foi configurado para ser compilado e servido pelo NGINX.
+
+### Dockerfile - Frontend:
+```dockerfile
+FROM node:18.17.0 AS build
+
+ARG REACT_APP_BACKEND_URL
+ENV REACT_APP_BACKEND_URL=${REACT_APP_BACKEND_URL:-http://localhost/api}
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN yarn config set strict-ssl false && CYPRESS_INSTALL_BINARY=0 yarn install
+
+COPY . .
+RUN yarn build
+
+FROM nginx:alpine
+COPY --from=build /app/build /usr/share/nginx/html
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+---
+
+## 5. Configuração do NGINX
+O NGINX foi configurado como **proxy reverso** e **balanceador de carga** entre múltiplas réplicas do backend.
+
+### nginx.conf:
+```nginx
+events {}
+
+http {
+    include /etc/nginx/mime.types;
+    sendfile on;
+
+    upstream backend {
+        least_conn;
+        server backend:5000;
+        server backend:5000;
+        server backend:5000;
+    }
+
+    server {
+        listen 80;
+
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+            try_files $uri /index.html;
+        }
+
+        location /api/ {
+            rewrite ^/api/(.*)$ /$1 break;
+            proxy_pass http://backend;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+
+        error_page 502 503 504 = /50x.html;
+        location = /50x.html {
+            root /usr/share/nginx/html;
+        }
+    }
+}
+```
+
+---
+
+## 6. Orquestração com Docker Compose
+O `docker-compose.yml` organiza os serviços e define réplicas para o backend e frontend.
+
+### docker-compose.yml:
+```yaml
+version: '3.8'
+
+services:
+  db1:
+    image: postgres:14.6
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secretpass
+      POSTGRES_DB: guess_game
+    volumes:
+      - db_data1:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: always
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 3
+    environment:
+      FLASK_APP: run.py
+      FLASK_DB_USER: postgres
+      FLASK_DB_PASSWORD: secretpass
+      FLASK_DB_NAME: guess_game
+      FLASK_DB_HOST: db1
+    networks:
+      - app-network
+    depends_on:
+      - db1
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 3
+    networks:
+      - app-network
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+    networks:
+      - app-network
+    depends_on:
+      - backend
+      - frontend
+    restart: always
+
+networks:
+  app-network:
+
+volumes:
+  db_data1:
+    name: persistent_postgres_data1
+```
+
+---
+
+## 7. Rodando o Projeto
+### Construir e iniciar os serviços:
+Execute o seguinte comando na raiz do projeto:
+```bash
+docker-compose up --build
+```
+
+### Acesso à aplicação:
+- Frontend: `http://<IP_DO_SERVIDOR>`
+- Backend: `http://<IP_DO_SERVIDOR>/api`
+
+---
+
+## 8. Decisões de Design
+1. **NGINX** como proxy reverso e balanceador de carga.
+2. **Docker Compose** para orquestração e escalabilidade de serviços.
+3. **Banco de dados PostgreSQL** configurado com persistência de dados via volumes.
+4. **Deploy de múltiplas réplicas** (3 réplicas para backend e frontend) para garantir resiliência e balanceamento.
+
+---
+
+## 9. Atualização dos Componentes
+Para atualizar qualquer componente (backend, frontend, ou banco de dados):
+1. Altere a versão da imagem no `Dockerfile` ou `docker-compose.yml`.
+2. Execute novamente:
    ```bash
-   git clone https://github.com/fams/guess_game.git
-   cd guess-game
+   docker-compose up --build
    ```
 
-2. Crie um ambiente virtual e ative-o:
+---
 
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # Linux/Mac
-   venv\Scripts\activate  # Windows
-   ```
+## 10. Observações
+- Todos os containers se comunicam corretamente utilizando a **rede app-network**.
+- Em caso de falha de uma réplica, as outras continuam funcionando devido ao balanceamento de carga no NGINX.
 
-3. Instale as dependências:
+---
 
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. Configure o banco de dados com as variáveis de ambiente no arquivo start-backend.sh
-    1. Para sqlite
-
-        ```bash
-            export FLASK_APP="run.py"
-            export FLASK_DB_TYPE="sqlite"            # Use SQLITE
-            export FLASK_DB_PATH="caminho/db.sqlite" # caminho do banco
-        ```
-
-    2. Para Postgres
-
-        ```bash
-            export FLASK_APP="run.py"
-            export FLASK_DB_TYPE="postgres"       # Use postgres
-            export FLASK_DB_USER="postgres"       # Usuário do banco
-            export FLASK_DB_NAME="postgres"       # Nome do Banco
-            export FLASK_DB_PASSWORD="secretpass" # Senha do banco
-            export FLASK_DB_HOST="localhost"      # Hostname
-            export FLASK_DB_PORT="5432"           # Porta
-        ```
-
-    3. Para DynamoDB
-
-        ```bash
-        export FLASK_APP="run.py"
-        export FLASK_DB_TYPE="dynamodb"       # Use postgres
-        export AWS_DEFAULT_REGION="us-east-1" # AWS region
-        export AWS_ACCESS_KEY_ID="FAKEACCESSKEY123456" 
-        export AWS_SECRET_ACCESS_KEY="FakeSecretAccessKey987654321"
-        export AWS_SESSION_TOKEN="FakeSessionTokenABCDEFGHIJKLMNOPQRSTUVXYZ1234567890"
-        ```
-
-5. Execute o backend
-
-   ```bash
-   ./start-backend.sh &
-   ```
-
-6. Cuidado! verifique se o seu linux está lendo o arquivo .sh com fim de linha do windows CRLF. Para verificar utilize o vim -b start-backend.sh
-
-## Frontend
-No diretorio de frontend
-
-1. Instale o node com o nvm. Se não tiver o nvm instalado, siga o [tutorial](https://github.com/nvm-sh/nvm?tab=readme-ov-file#installing-and-updating)
-
-    ```bash
-    nvm install 18.17.0
-    nvm use 18.17.0
-    # Habilite o yarn
-    corepack enable
-    ```
-
-2. Instale as dependências do node com o npm:
-
-    ```bash
-    npm install
-    ```
-
-3. Exporte a url onde está executando o backend e execute o backend.
-
-   ```bash
-    export REACT_APP_BACKEND_URL=http://localhost:5000
-    yarn start
-   ```
-
-## Como Jogar
-
-### 1. Criar um novo jogo
-
-Acesse a url do frontend http://localhost:3000
-
-Digite uma frase secreta
-
-Envie
-
-Salve o game-id
-
-
-### 2. Adivinhar a senha
-
-Acesse a url do frontend http://localhost:3000
-
-Vá para o endponint breaker
-
-entre com o game_id que foi gerado pelo Creator
-
-Tente adivinhar
-
-## Estrutura do Código
-
-### Rotas:
-
-- **`/create`**: Cria um novo jogo. Armazena a senha codificada em base64 e retorna um `game_id`.
-- **`/guess/<game_id>`**: Permite ao usuário adivinhar a senha. Compara a adivinhação com a senha armazenada e retorna o resultado.
-
-### Classes Importantes:
-
-- **`Guess`**: Classe responsável por gerenciar a lógica de comparação entre a senha e a tentativa do jogador.
-- **`WrongAttempt`**: Exceção personalizada que é levantada quando a tentativa está incorreta.
-
-
-
-## Melhorias Futuras
-
-- Implementar autenticação de usuário para salvar e carregar jogos.
-- Adicionar limite de tentativas.
-- Melhorar a interface de feedback para as tentativas de adivinhação.
-
-## Licença
-
-Este projeto está licenciado sob a [MIT License](LICENSE).
-
+**FIM**
