@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  db1:
+    image: postgres:14.6
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secretpass
+      POSTGRES_DB: guess_game
+    volumes:
+      - db_data1:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: always
+
+  db2:
+    image: postgres:14.6
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secretpass
+      POSTGRES_DB: guess_game
+    volumes:
+      - db_data2:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: always
+
+  db3:
+    image: postgres:14.6
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: secretpass
+      POSTGRES_DB: guess_game
+    volumes:
+      - db_data3:/var/lib/postgresql/data
+    networks:
+      - app-network
+    restart: always
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 3  # Balanceamento de carga com 3 réplicas
+    environment:
+      FLASK_APP: run.py
+      FLASK_DB_TYPE: postgres
+      FLASK_DB_USER: postgres
+      FLASK_DB_PASSWORD: secretpass
+      FLASK_DB_NAME: guess_game
+      FLASK_DB_HOST: db1  # Conecta ao banco db1 por padrão
+      FLASK_DB_PORT: 5432
+    networks:
+      - app-network
+    depends_on:
+      - db1
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    deploy:
+      replicas: 3  # Balanceamento de carga com 3 réplicas
+    networks:
+      - app-network
+    restart: always
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"  # Expõe a porta 80 para acesso ao NGINX
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf  # Configuração do NGINX
+    networks:
+      - app-network
+    depends_on:
+      - backend
+      - frontend
+    restart: always
+
+networks:
+  app-network:
+
+volumes:
+  db_data1:
+    name: persistent_postgres_data1
+  db_data2:
+    name: persistent_postgres_data2
+  db_data3:
+    name: persistent_postgres_data3
